@@ -20,9 +20,9 @@ use Hyperf\Utils\ChannelPool;
 use InvalidArgumentException;
 
 /**
- * @method int send(Request $request)
- * @method mixed recv(int $streamId, float $timeout = null)
- * @method bool close($yield = false)
+ * @method int _send(Request $request)
+ * @method mixed _recv(int $streamId, float $timeout = null)
+ * @method bool _close($yield = false)
  */
 class BaseClient
 {
@@ -61,35 +61,31 @@ class BaseClient
 
     public function __get($name)
     {
-        if (! $this->initialized) {
-            $this->init();
-        }
-        return $this->getGrpcClient()->{$name};
+        $name = substr($name, 1);
+        return $this->_getGrpcClient()->{$name};
     }
 
     public function __call($name, $arguments)
     {
-        if (! $this->initialized) {
-            $this->init();
-        }
-        return $this->getGrpcClient()->{$name}(...$arguments);
+        $name = substr($name, 1);
+        return $this->_getGrpcClient()->{$name}(...$arguments);
     }
 
-    public function start()
+    public function _start()
     {
         $client = $this->grpcClient;
         return $client->isRunning() || $client->start();
     }
 
-    public function getGrpcClient(): GrpcClient
+    public function _getGrpcClient(): GrpcClient
     {
         if (! $this->initialized) {
-            $this->init();
+            $this->_init();
         }
         return $this->grpcClient;
     }
 
-    protected function init()
+    protected function _init()
     {
         if (! empty($this->options['client'])) {
             if (! ($this->options['client'] instanceof GrpcClient)) {
@@ -100,7 +96,7 @@ class BaseClient
             $this->grpcClient = new GrpcClient(ApplicationContext::getContainer()->get(ChannelPool::class));
             $this->grpcClient->set($this->hostname, $this->options);
         }
-        if (! $this->start()) {
+        if (! $this->_start()) {
             $message = sprintf(
                 'Grpc client start failed with error code %d when connect to %s',
                 $this->grpcClient->getErrCode(),
@@ -121,7 +117,7 @@ class BaseClient
      * @throws GrpcClientException
      * @return array|\Google\Protobuf\Internal\Message[]|\swoole_http2_response[]
      */
-    protected function simpleRequest(
+    protected function _simpleRequest(
         string $method,
         Message $argument,
         $deserialize
@@ -129,6 +125,7 @@ class BaseClient
         $streamId = retry($this->options['retry_attempts'] ?? 3, function () use ($method, $argument) {
             $streamId = $this->send($this->buildRequest($method, $argument));
             if ($streamId === 0) {
+                // restart recv and send coroutines.
                 $this->init();
                 // The client should not be used after this exception
                 throw new GrpcClientException('Failed to send the request to server', StatusCode::INTERNAL);
@@ -147,12 +144,12 @@ class BaseClient
      *
      * @return ClientStreamingCall The active call object
      */
-    protected function clientStreamRequest(
+    protected function _clientStreamRequest(
         string $method,
         $deserialize
     ): ClientStreamingCall {
         $call = new ClientStreamingCall();
-        $call->setClient($this->grpcClient)
+        $call->setClient($this->_getGrpcClient())
             ->setMethod($method)
             ->setDeserialize($deserialize);
 
@@ -170,15 +167,16 @@ class BaseClient
         $deserialize
     ): BidiStreamingCall {
         $call = new BidiStreamingCall();
-        $call->setClient($this->grpcClient)
+        $call->setClient($this->_getGrpcClient())
             ->setMethod($method)
             ->setDeserialize($deserialize);
 
         return $call;
     }
 
-    protected function buildRequest(string $method, Message $argument): Request
+    protected function _buildRequest(string $method, Message $argument): Request
     {
-        return new Request($method, $argument);
+        $headers = data_get($this->options, 'header', []);
+        return new Request($method, $argument, $headers);
     }
 }
